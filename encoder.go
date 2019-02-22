@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"github.com/CatalystG/protoc-gen-gotemplate/proto"
+	"github.com/golang/protobuf/proto"
 	"log"
 	"net/url"
 	"os"
@@ -11,9 +13,9 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/protoc-gen-go/descriptor"
-	plugin_go "github.com/golang/protobuf/protoc-gen-go/plugin"
+	"github.com/golang/protobuf/protoc-gen-go/plugin"
 
-	pgghelpers "moul.io/protoc-gen-gotemplate/helpers"
+	"moul.io/protoc-gen-gotemplate/helpers"
 )
 
 type GenericTemplateBasedEncoder struct {
@@ -39,6 +41,8 @@ type Ast struct {
 	TemplateDir    string                             `json:"template-dir"`
 	Service        *descriptor.ServiceDescriptorProto `json:"service"`
 	Enum           []*descriptor.EnumDescriptorProto  `json:"enum"`
+	Options        map[string]*gotemplate.GoTemplateOption       `json:"options"`
+	Path		   string `json:"path"`
 }
 
 func NewGenericServiceTemplateBasedEncoder(templateDir string, service *descriptor.ServiceDescriptorProto, file *descriptor.FileDescriptorProto, debug bool, destinationDir string) (e *GenericTemplateBasedEncoder) {
@@ -122,6 +126,20 @@ func (e *GenericTemplateBasedEncoder) genAst(templateFilename string) (*Ast, err
 			goPwd = ""
 		}
 	}
+
+	// Get the options: this should be a new function helper probably instead.
+	gto := make(map[string]*gotemplate.GoTemplateOption)
+	for _, v := range e.file.MessageType {
+		if v == nil || v.Options == nil {
+			continue
+		}
+		mo := v.Options
+		i, _ := proto.GetExtension(mo, gotemplate.E_GoTemplateOption)
+		if i != nil {
+			gto[*v.Name] = i.(*gotemplate.GoTemplateOption)
+		}
+	}
+
 	ast := Ast{
 		BuildDate:      time.Now(),
 		BuildHostname:  hostname,
@@ -135,6 +153,8 @@ func (e *GenericTemplateBasedEncoder) genAst(templateFilename string) (*Ast, err
 		Filename:       "",
 		Service:        e.service,
 		Enum:           e.enum,
+		Options:        gto,
+		Path: filepath.Dir(*e.file.Name),
 	}
 	buffer := new(bytes.Buffer)
 
@@ -176,7 +196,8 @@ func (e *GenericTemplateBasedEncoder) buildContent(templateFilename string) (str
 		return "", "", err
 	}
 
-	return buffer.String(), ast.Filename, nil
+	s := filepath.Dir(ast.Filename) + "/" + filepath.Base(*(ast.File.Name)) + "_" + filepath.Base(ast.Filename)
+	return buffer.String(), s, nil
 }
 
 func (e *GenericTemplateBasedEncoder) Files() []*plugin_go.CodeGeneratorResponse_File {
@@ -188,6 +209,7 @@ func (e *GenericTemplateBasedEncoder) Files() []*plugin_go.CodeGeneratorResponse
 	length := len(templates)
 	files := make([]*plugin_go.CodeGeneratorResponse_File, 0, length)
 	errChan := make(chan error, length)
+	ignoreChan := make(chan string, length)
 	resultChan := make(chan *plugin_go.CodeGeneratorResponse_File, length)
 	for _, templateFilename := range templates {
 		go func(tmpl string) {
@@ -199,6 +221,11 @@ func (e *GenericTemplateBasedEncoder) Files() []*plugin_go.CodeGeneratorResponse
 			}
 			filename := translatedFilename[:len(translatedFilename)-len(".tmpl")]
 
+			if content == "" {
+				ignoreChan <- ""
+				return
+			}
+
 			resultChan <- &plugin_go.CodeGeneratorResponse_File{
 				Content: &content,
 				Name:    &filename,
@@ -207,6 +234,7 @@ func (e *GenericTemplateBasedEncoder) Files() []*plugin_go.CodeGeneratorResponse
 	}
 	for i := 0; i < length; i++ {
 		select {
+		case <-ignoreChan:
 		case f := <-resultChan:
 			files = append(files, f)
 		case err = <-errChan:

@@ -1,0 +1,14 @@
+syntax = "proto3";
+package gotemplate;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "gotemplate";
+
+extend google.protobuf.MessageOptions {
+    GoTemplateOption go_template_option = 65020;
+}
+
+message GoTemplateOption {
+    bool enable = 1;
+}
